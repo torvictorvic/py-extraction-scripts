@@ -1,0 +1,139 @@
+import boto3
+import numpy as np
+import pandas as pd
+import io
+from io import StringIO, BytesIO
+from datetime import date, timedelta, datetime
+import zipfile
+import glob
+import os
+import os.path
+import sys
+import pytz
+import time
+from pandas import DataFrame
+from enum import Enum
+import math
+from urllib.parse import urlparse
+
+class S3Url(object):
+
+    def __init__(self, url):
+        self._parsed = urlparse(url, allow_fragments=False)
+
+    @property
+    def bucket(self):
+        return self._parsed.netloc
+
+    @property
+    def key(self):
+        if self._parsed.query:
+            return self._parsed.path.lstrip('/') + '?' + self._parsed.query
+        else:
+            return self._parsed.path.lstrip('/')
+
+    @property
+    def url(self):
+        return self._parsed.geturl()
+        
+class FileReader:
+    @staticmethod
+    def read(uri: str):
+        origin = urlparse(uri, allow_fragments=False)
+        if origin.scheme in ('s3', 's3a'):
+            session = boto3.session.Session()
+            s3 = session.client('s3')
+            s3_url = S3Url(uri)
+            obj = s3.get_object(Bucket=s3_url.bucket, Key=s3_url.key)
+            lm = obj['LastModified']
+            obj = obj['Body'].read()
+            binary_data = BytesIO(obj)
+            return binary_data,lm
+        else:
+            with open(uri) as f:
+                return uri,datetime.today()
+
+class Extractor:
+    @staticmethod
+    def extractor_encabezado(filename):
+      file,lm = FileReader.read(filename)
+      df_1 = pd.read_csv(file,encoding='utf-8',dtype=str,sep=",", nrows=3,header=None)
+      return df_1
+    
+    @staticmethod
+    def run(filename, **kwargs):
+        file,lm = FileReader.read(filename)
+        my_timestamp = datetime.utcnow()
+        old_timezone = pytz.timezone("UTC")
+        new_timezone = pytz.timezone('America/Argentina/Buenos_Aires')
+        # returns datetime in the new timezone
+        arg_datetime = old_timezone.localize(my_timestamp).astimezone(new_timezone)
+        upload_date = lm.astimezone(new_timezone)
+        print(type(file))
+        print('Contenido ', lm)
+        print(f'Uploading {filename} . . .')
+        try:
+            print('Ingreso al try')
+
+            #Data Frame de transacciones
+            df = pd.read_csv(file,encoding='utf-8',dtype=str,sep=",", header=3)
+            last_row = df.shape[0]
+                
+            print('Leyo el df de transacciones')
+
+            #DataFrame encabezado
+            df_1 = Extractor.extractor_encabezado(filename)
+
+            print('Leyo el df de encabezado')
+
+            #Se eliminan los valores diferentes a SB
+            mask = df['CH'] == 'SB'
+            df = df[mask]
+
+            print('Leyo el df de valores diferentes a SB')
+
+            # Agregar tercer row como columna al DataFrame
+            df['fecha_de_recep_archivo'] = df_1[2][2]
+
+            # Cambio/Limpieza de nombre de columnas
+            df.columns = ["ch","id_de_transaccion","id_del_formato_de_pago","id_de_referencia_de_paypal",
+                          "tipo_de_id_de_referencia_de_paypal","codigo_de_evento_de_la_transaccion",
+                          "fecha_de_inicio_de_la_transaccion","fecha_de_finalizacion_de_la_transaccion",
+                          "transaccion_con_tarjeta_de_debito_o_credito","importe_bruto_de_la_transaccion",
+                          "divisa_de_la_transaccion_bruta","comision_de_la_tarjeta_de_debito_o_credito",
+                          "importe_de_la_comision","divisa_de_comision","estado_de_la_transaccion","importe_del_seguro",
+                          "importe_del_impuesto_de_ventas","importe_del_envio","asunto_de_la_transaccion",
+                          "nota_de_la_transaccion","id_de_la_cuenta_del_pagador","estado_de_la_direccion_del_pagador",
+                          "nombre_del_articulo","id_del_articulo","nombre_de_la_opcion_1","valor_de_la_opcion_1",
+                          "nombre_de_la_opcion_2","valor_de_la_opcion_2","sitio_de_subastas","id_del_comprador_de_la_subasta",
+                          "fecha_del_cierre_de_la_subasta","direccion_de_envio","direccion_de_envio_continuacion",
+                          "direccion_de_envio_ciudad","direccion_de_envio_estado","direccion_de_envio_codigo_postal",
+                          "direccion_de_envio_pais","forma_de_envio","campo_personalizado","direccion_de_la_tarjeta",
+                          "direccion_de_la_tarjeta_continuacion","direccion_de_la_tarjeta_ciudad",
+                          "direccion_de_la_tarjeta_estado","direccion_de_la_tarjeta_codigo_postal",
+                          "direccion_de_la_tarjeta_pais","id_del_consumidor","nombre","apellidos",
+                          "nombre_de_la_empresa_del_consumidor","tipo_de_tarjeta","fuente_de_pago",
+                          "nombre_de_envio","estado_de_la_revision_de_la_autorizacion","requisitos_para_la_proteccion",
+                          "id_de_seguimiento_del_pago","id_de_tienda","id_de_terminal","cupones","promociones_especiales",
+                          "numero_de_tarjeta_de_lealtad","tipo_de_pago","direccion_de_envio_secundaria",
+                          "direccion_de_envio_secundaria_continuacion","direccion_de_envio_secundaria_ciudad",
+                          "direccion_de_envio_secundaria_estado","direccion_de_envio_secundaria_pais",
+                          "direccion_de_envio_secundaria_codigo_postal","id_de_referencia_de_3pl","id_de_la_tarjeta_de_regalo",
+                          "fecha_de_recep_archivo"]
+            df = df[df.columns[0:]].replace(',', '.', regex=True)
+                        
+            print('Se limpiaron los nombres de los columnas')
+
+            # Adición de trazabilidad
+            df['upload_date'] = upload_date.strftime('%Y-%m-%d %H:%M:%S')
+            df['report_date'] = arg_datetime.strftime('%Y-%m-%d %H:%M:%S')
+            out = filename.split('/')[-1]
+            df['file_name'] = out
+            df.reset_index(drop=True)
+            df['skt_extraction_rn'] = df.index.values
+            print('Cargó el df')
+            
+            return df
+        except Exception as e:
+            print("Error al subir la fuente: ",e)
+        print('Se retorna df')

@@ -1,0 +1,34 @@
+image: atlassian/default-image:2
+
+pipelines:
+  branches:
+    main:
+      - step:
+          script:
+            - export VAR_INCLUDES=$(/bin/bash git_log.sh $BITBUCKET_COMMIT)
+            - pipe: atlassian/aws-s3-deploy:1.1.0
+              variables:
+                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+                AWS_DEFAULT_REGION: 'us-east-1'
+                S3_BUCKET: 'simetrik-in-resources/pre-production/ebs'
+                EXPIRES: '2018-10-01'
+                LOCAL_PATH: '.'
+                ACL: 'bucket-owner-full-control'
+                DELETE_FLAG: 'true'
+                EXTRA_ARGS: "--exclude=* $VAR_INCLUDES"
+    develop:
+      - step:
+          script:
+            - export VAR_INCLUDES=$(/bin/bash git_log.sh $BITBUCKET_COMMIT)
+            - pipe: atlassian/aws-s3-deploy:1.1.0
+              variables:
+                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+                AWS_DEFAULT_REGION: 'us-east-2'
+                S3_BUCKET: 'simetrik-in-resources/staging/ebs'
+                EXPIRES: '2018-10-01'
+                LOCAL_PATH: '.'
+                ACL: 'bucket-owner-full-control'
+                DELETE_FLAG: 'true'
+                EXTRA_ARGS: "--exclude=* $VAR_INCLUDES"
